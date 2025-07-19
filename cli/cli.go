@@ -5,7 +5,7 @@ import (
 	"io"
 
 	"github.com/alecthomas/kong"
-	donatelyhttp "github.com/willmadison/donately-sync-tools/donately/http"
+	"github.com/willmadison/donately-sync-tools/donately/http"
 )
 
 // Environment provides an abstraction around the execution environment
@@ -20,12 +20,7 @@ type BackfillCmd struct {
 	PathToCSV string `required help:"the path the CSV file full of historical donor information."`
 }
 
-func (cmd *BackfillCmd) Run(env *Environment) error {
-	client, err := donatelyhttp.NewDonatelyClient()
-	if err != nil {
-		panic(err.Error())
-	}
-
+func (cmd *BackfillCmd) Run(env *Environment, client http.Client) error {
 	account, err := client.FindAccount(cmd.AccountID)
 	if err != nil {
 		panic(err.Error())
@@ -43,6 +38,11 @@ type CLI struct {
 func Run(env Environment) int {
 	app := CLI{}
 
+	client, err := http.NewDonatelyClient()
+	if err != nil {
+		panic(err.Error())
+	}
+
 	cntx := kong.Parse(&app,
 		kong.Name("backfill"),
 		kong.Description("donately utils"),
@@ -51,8 +51,9 @@ func Run(env Environment) int {
 			Compact: true,
 		}),
 	)
+	cntx.BindTo(client, (*http.Client)(nil))
 
-	err := cntx.Run(&env)
+	err = cntx.Run(&env)
 	cntx.FatalIfErrorf(err)
 
 	return 0

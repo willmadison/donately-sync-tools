@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/willmadison/donately-sync-tools/donately"
@@ -16,7 +17,7 @@ import (
 
 type Client interface {
 	FindAccount(string) (donately.Account, error)
-	ListPeople(donately.Account) ([]donately.Person, error)
+	ListPeople(donately.Account, int, int) ([]donately.Person, error)
 	FindPerson(string, donately.Account) (donately.Person, error)
 	Me() (donately.Person, error)
 	SavePerson(donately.Person) (donately.Person, error)
@@ -43,14 +44,11 @@ type donatelyClient struct {
 }
 
 type APIResponse struct {
-	Data   json.RawMessage `json:"data"`
-	Error  *APIError       `json:"error"`
-	Status int             `json:"status"`
-}
-
-type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Data      json.RawMessage `json:"data"`
+	Type      string          `json:"type"`
+	Message   string          `json:"message"`
+	Code      string          `json:"code"`
+	RequestID string          `json:"request_id"`
 }
 
 func NewDonatelyClient() (Client, error) {
@@ -122,12 +120,12 @@ func (c *donatelyClient) makeRequestWithContentType(method, endpoint string, bod
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	if apiResp.Error != nil {
-		return nil, fmt.Errorf("API error: %s - %s", apiResp.Error.Code, apiResp.Error.Message)
+	if apiResp.Type != "" && apiResp.Message != "" && apiResp.Code != "" {
+		return nil, fmt.Errorf("API error: %s - (%s) %s", apiResp.Code, apiResp.Type, apiResp.Message)
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP error: %d", resp.StatusCode)
+		return nil, fmt.Errorf("HTTP error: %d (Raw Response: %v)", resp.StatusCode, apiResp)
 	}
 
 	return &apiResp, nil
@@ -149,9 +147,17 @@ func (c *donatelyClient) FindAccount(id string) (donately.Account, error) {
 	return account, nil
 }
 
-func (c *donatelyClient) ListPeople(account donately.Account) ([]donately.Person, error) {
+func (c *donatelyClient) ListPeople(account donately.Account, offset, limit int) ([]donately.Person, error) {
 	params := url.Values{}
 	params.Set("account_id", account.ID)
+
+	if offset > 0 {
+		params.Set("offset", strconv.Itoa(offset))
+	}
+
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+	}
 
 	resp, err := c.makeRequest(http.MethodGet, "/people?"+params.Encode(), nil)
 	if err != nil {

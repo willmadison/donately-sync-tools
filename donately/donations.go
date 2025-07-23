@@ -1,6 +1,13 @@
 package donately
 
-import "time"
+import (
+	"encoding/csv"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+	"time"
+)
 
 type Donation struct {
 	ID                  string       `json:"id"`
@@ -72,4 +79,63 @@ type ChargeSource struct {
 	Metadata           map[string]any `json:"metadata"`
 	Name               string         `json:"name"`
 	TokenizationMethod *string        `json:"tokenization_method"`
+}
+
+type CollectionReportRecord struct {
+	FirstName, LastName, EmailAddress string
+	AmountDonated, AmountPledged      float64
+}
+
+func ParseCollectionReportCSV(r io.ReadCloser) ([]CollectionReportRecord, error) {
+	defer r.Close()
+
+	reader := csv.NewReader(r)
+
+	_, err := reader.Read()
+
+	if err != nil {
+		return nil, err
+	}
+
+	records, err := reader.ReadAll()
+
+	if err != nil {
+		return nil, err
+	}
+
+	var reportRecords []CollectionReportRecord
+
+	for _, record := range records {
+		firstName := record[0]
+		lastName := record[1]
+		email := record[2]
+		rawDonationAmount := record[3]
+		rawDonationAmount = strings.ReplaceAll(rawDonationAmount, ",", "")
+		rawPledgedAmount := record[4]
+		rawPledgedAmount = strings.ReplaceAll(rawPledgedAmount, ",", "")
+
+		amountDonated, err := strconv.ParseFloat(rawDonationAmount, 64)
+		if err != nil {
+			return nil, err
+		}
+
+		amountPledged, err := strconv.ParseFloat(rawPledgedAmount, 64)
+		if err != nil {
+			return nil, err
+		}
+
+		if email == "" {
+			email = fmt.Sprintf("%v.%v@gmail.com", firstName, lastName)
+		}
+
+		reportRecords = append(reportRecords, CollectionReportRecord{
+			FirstName:     firstName,
+			LastName:      lastName,
+			EmailAddress:  email,
+			AmountDonated: amountDonated,
+			AmountPledged: amountPledged,
+		})
+	}
+
+	return reportRecords, nil
 }

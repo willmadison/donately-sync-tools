@@ -3,8 +3,11 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
+	"strings"
 
 	"github.com/alecthomas/kong"
+	"github.com/willmadison/donately-sync-tools/donately"
 	"github.com/willmadison/donately-sync-tools/donately/http"
 )
 
@@ -17,7 +20,7 @@ type Environment struct {
 
 type BackfillCmd struct {
 	AccountID string `required help:"the account id that this backfill should take place in."`
-	PathToCSV string `required help:"the path the CSV file full of historical donor information."`
+	PathToCSV string `required help:"the absolute path to the CSV file full of historical donation information."`
 }
 
 func (cmd *BackfillCmd) Run(env *Environment, client http.Client) error {
@@ -27,6 +30,88 @@ func (cmd *BackfillCmd) Run(env *Environment, client http.Client) error {
 	}
 
 	fmt.Printf("Account information, %+v\n", account)
+
+	in, err := os.Open(cmd.PathToCSV)
+	if err != nil {
+		panic(err)
+	}
+
+	var allDonors []donately.Person
+
+	offset := 0
+	limit := 100
+
+	for {
+		donors, err := client.ListPeople(account, offset, limit)
+		if err != nil {
+			return err
+		}
+
+		if len(donors) == 0 {
+			break
+		}
+
+		allDonors = append(allDonors, donors...)
+		offset += len(donors) + 1
+	}
+
+	donorsByEmailAddress := map[string]donately.Person{}
+
+	for _, donor := range allDonors {
+		donorsByEmailAddress[strings.ToLower(donor.Email)] = donor
+	}
+
+	collectionRecords, err := donately.ParseCollectionReportCSV(in)
+
+	if err != nil {
+		return err
+	}
+
+	recordsByFailureReason := map[string][]donately.CollectionReportRecord{}
+
+	for _, c := range collectionRecords {
+		if _, present := donorsByEmailAddress[strings.ToLower(c.EmailAddress)]; !present {
+			fmt.Printf("%v %v is missing in Donately, adding them in...\n", c.FirstName, c.LastName)
+
+			p := donately.Person{
+				Accounts:  []donately.Account{account},
+				FirstName: c.FirstName,
+				LastName:  c.LastName,
+				Email:     c.EmailAddress,
+			}
+
+			savedPerson, err := client.SavePerson(p)
+			if err != nil {
+				fmt.Printf("Encountered an error saving this person: %+v. Skipping...\n", p)
+
+				if _, accountedFor := recordsByFailureReason[err.Error()]; !accountedFor {
+					recordsByFailureReason[err.Error()] = []donately.CollectionReportRecord{}
+				}
+				recordsByFailureReason[err.Error()] = append(recordsByFailureReason[err.Error()], c)
+				continue
+			}
+
+			fmt.Printf("%v %v saved (personId=%v)\n", c.FirstName, c.LastName, savedPerson.ID)
+		} else {
+			// See how much of a delta there is between their historical total donations and what the record says they've given
+		}
+	}
+
+	if len(recordsByFailureReason) > 0 {
+		fmt.Println("The following Persons couldn't be saved for one reason or another:")
+
+		for reason, records := range recordsByFailureReason {
+			fmt.Printf("Reason: %v\n", reason)
+
+			for _, record := range records {
+				fmt.Printf("Record: %v\n", record)
+			}
+
+			fmt.Println()
+			fmt.Println()
+			fmt.Println()
+		}
+	}
 
 	return nil
 }

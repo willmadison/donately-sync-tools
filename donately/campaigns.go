@@ -18,7 +18,7 @@ type Campaign struct {
 	EndDate             *string        `json:"end_date"`
 	GoalInCents         int64          `json:"goal_in_cents"`
 	AmountRaisedInCents int64          `json:"amount_raised_in_cents"`
-	PercentFunded       int            `json:"percent_funded"`
+	PercentFunded       float64        `json:"percent_funded"`
 	DonorsCount         int            `json:"donors_count"`
 	Images              CampaignImages `json:"images"`
 	Account             Account        `json:"account"`

@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cenkalti/backoff/v5"
 	"github.com/willmadison/donately-sync-tools/donately"
 )
 
@@ -21,7 +23,7 @@ type Client interface {
 	FindPerson(string, donately.Account) (donately.Person, error)
 	Me() (donately.Person, error)
 	SavePerson(donately.Person) (donately.Person, error)
-	ListDonations(donately.Account) ([]donately.Donation, error)
+	ListDonations(donately.Account, int, int) ([]donately.Donation, error)
 	ListMyDonations() ([]donately.Donation, error)
 	FindDonation(string, donately.Account) (donately.Donation, error)
 	SaveDonation(donately.Donation) (donately.Donation, error)
@@ -65,6 +67,27 @@ func NewDonatelyClient() (Client, error) {
 	}, nil
 }
 
+type retryable interface {
+	CanRetry() bool
+}
+
+type retryableError struct {
+	Err      error
+	canRetry bool
+}
+
+func (e retryableError) Error() string {
+	return e.Err.Error()
+}
+
+func (e retryableError) Unwrap() error {
+	return e.Err
+}
+
+func (e retryableError) CanRetry() bool {
+	return e.canRetry
+}
+
 func (c *donatelyClient) makeRequest(method, endpoint string, body any) (*APIResponse, error) {
 	return c.makeRequestWithContentType(method, endpoint, body, "application/json")
 }
@@ -104,6 +127,10 @@ func (c *donatelyClient) makeRequestWithContentType(method, endpoint string, bod
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
+	requestLine := fmt.Sprintf("%s %s %s", req.Method, req.URL.RequestURI(), req.Proto)
+
+	fmt.Println("Issuing request", requestLine)
+
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request: %w", err)
@@ -117,7 +144,15 @@ func (c *donatelyClient) makeRequestWithContentType(method, endpoint string, bod
 
 	var apiResp APIResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		rawBody := string(respBody)
+
+		errorReturned := fmt.Errorf("failed to unmarshal response: %w", err)
+
+		if "retry later" == strings.ToLower(strings.TrimSpace(rawBody)) {
+			return nil, retryableError{Err: errorReturned, canRetry: true}
+		}
+
+		return nil, errorReturned
 	}
 
 	if apiResp.Type != "" && apiResp.Message != "" && apiResp.Code != "" {
@@ -268,10 +303,17 @@ func (c *donatelyClient) SavePerson(person donately.Person) (donately.Person, er
 	return savedPerson, nil
 }
 
-// Donations operations
-func (c *donatelyClient) ListDonations(account donately.Account) ([]donately.Donation, error) {
+func (c *donatelyClient) ListDonations(account donately.Account, offset, limit int) ([]donately.Donation, error) {
 	params := url.Values{}
 	params.Set("account_id", account.ID)
+
+	if offset > 0 {
+		params.Set("offset", strconv.Itoa(offset))
+	}
+
+	if limit > 0 {
+		params.Set("limit", strconv.Itoa(limit))
+	}
 
 	resp, err := c.makeRequest(http.MethodGet, "/donations?"+params.Encode(), nil)
 	if err != nil {
@@ -335,19 +377,16 @@ func (c *donatelyClient) SaveDonation(donation donately.Donation) (donately.Dona
 	params.Set("account_id", donation.Account.ID)
 
 	if donation.AmountInCents > 0 {
-		params.Set("amount", fmt.Sprintf("%d", donation.AmountInCents))
+		params.Set("amount_in_cents", fmt.Sprintf("%d", donation.AmountInCents))
 	}
-	if donation.Person.FirstName != "" {
-		params.Set("first_name", donation.Person.FirstName)
+	if donation.DonationType != "" {
+		params.Set("donation_type", donation.DonationType)
 	}
-	if donation.Person.LastName != "" {
-		params.Set("last_name", donation.Person.LastName)
+	if donation.Campaign.ID != "" {
+		params.Set("campaign_id", donation.Campaign.ID)
 	}
 	if donation.Person.Email != "" {
 		params.Set("email", donation.Person.Email)
-	}
-	if donation.Person.PhoneNumber != "" {
-		params.Set("phone_number", donation.Person.PhoneNumber)
 	}
 	if donation.Comment != "" {
 		params.Set("comment", donation.Comment)
@@ -358,11 +397,8 @@ func (c *donatelyClient) SaveDonation(donation donately.Donation) (donately.Dona
 	if donation.OnBehalfOf != "" {
 		params.Set("on_behalf_of", donation.OnBehalfOf)
 	}
-	if donation.Person.StreetAddress != "" {
-		params.Set("street_address", donation.Person.StreetAddress)
-	}
-	if donation.MetaData.DonorPaysFees > 0 {
-		params.Set("donor_pays_fees", "true")
+	if donation.Status != "" {
+		params.Set("status", donation.Status)
 	}
 
 	if len(params) > 0 {
@@ -370,7 +406,18 @@ func (c *donatelyClient) SaveDonation(donation donately.Donation) (donately.Dona
 	}
 
 	resp, err := c.makeRequest(http.MethodPost, endpoint, nil)
-	if err != nil {
+
+	re, ok := err.(retryable)
+	if ok && re.CanRetry() {
+		operation := func() (*APIResponse, error) {
+			return c.makeRequest(http.MethodPost, endpoint, nil)
+		}
+		resp, err = backoff.Retry(context.TODO(), operation, backoff.WithBackOff(backoff.NewExponentialBackOff()))
+		if err != nil {
+			return donately.Donation{}, err
+
+		}
+	} else {
 		return donately.Donation{}, err
 	}
 

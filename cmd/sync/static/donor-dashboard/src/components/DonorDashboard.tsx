@@ -71,7 +71,13 @@ export default function DonorDashboard() {
         fetchCampaignOverview();
     }, []);
 
-    if (loading) return <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />;
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center h-screen w-full">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+        );
+    }
     if (error) return <div className="text-red-500">Error: {error}</div>;
 
     if (!campaignOverview) return <div>No Campaign Info</div>;
@@ -82,7 +88,7 @@ export default function DonorDashboard() {
 
     return (
         <div className="p-6 space-y-6">
-            <h1 className="text-2xl font-bold">Campaign Progress</h1>
+            <h1 className="text-2xl font-bold">{campaignOverview.title} Progress</h1>
             <Card>
                 <CardContent className="p-4">
                     <div className="flex items-center justify-between mb-2">

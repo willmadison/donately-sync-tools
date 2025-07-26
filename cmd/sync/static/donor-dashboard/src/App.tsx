@@ -1,13 +1,11 @@
 import './App.css'
 import DonorDashboard from "@/components/DonorDashboard";
-import CampaignLandingPage from '@/components/CampaignLandingPage';
+import DonateNow from '@/components/DonateNow';
 
 function App() {
   return (
     <div className="flex gap-12 flex-col min-h-screen">
-      <div className="min-h-[50vh]">
-        <CampaignLandingPage />
-      </div>
+      <DonateNow />
       <div className="min-h-[50vh]">
         <DonorDashboard />
       </div>

@@ -173,7 +173,8 @@ func parseAdjustments(adjustmentNames, adjustmentValues []string) []Adjustment {
 			displayName := adjustmentNames[i]
 			slug := sluggify(displayName)
 
-			amount, _ := strconv.ParseFloat(value, 64)
+			commalessValue := strings.ReplaceAll(value, ",", "")
+			amount, _ := strconv.ParseFloat(commalessValue, 64)
 
 			if amount > 0 {
 				adjustments = append(adjustments, Adjustment{

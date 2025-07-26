@@ -21,6 +21,7 @@ type Adjustment struct {
 
 type Donor struct {
 	Person      Person       `json:"person"`
+	Pledge      float64      `json:"pledge"`
 	Donations   []Donation   `json:"donations"`
 	Adjustments []Adjustment `json:"adjustments"`
 }

@@ -2,14 +2,22 @@ package cli
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/gin-gonic/gin"
 	"github.com/willmadison/donately-sync-tools/donately"
-	"github.com/willmadison/donately-sync-tools/donately/http"
+	donatelyhttp "github.com/willmadison/donately-sync-tools/donately/http"
 )
 
 const epsilon = 1e-9
@@ -19,30 +27,27 @@ type Environment struct {
 	Stderr io.Writer
 	Stdout io.Writer
 	Stdin  io.Reader
+	Files  embed.FS
+	UI     embed.FS
 }
 
 type BackfillCmd struct {
 	AccountID  string `required help:"the account id that this backfill should take place in."`
 	CampaignID string `required help:"the campaign id that this backfill should take place in."`
-	PathToCSV  string `required help:"the absolute path to the CSV file full of historical donation information."`
 }
 
-func (cmd *BackfillCmd) Run(env *Environment, client http.Client, adjustmentStore donately.AdjustmentStore) error {
+func (cmd *BackfillCmd) Run(env *Environment, client donatelyhttp.Client, adjustmentStore donately.AdjustmentStore) error {
 	account, err := client.FindAccount(cmd.AccountID)
 	if err != nil {
 		panic(err.Error())
 	}
-
-	fmt.Printf("Account information, %+v\n", account)
 
 	campaign, err := client.FindCampaign(cmd.CampaignID, account)
 	if err != nil {
 		panic(err.Error())
 	}
 
-	fmt.Printf("Campaign information, %+v\n", campaign)
-
-	in, err := os.Open(cmd.PathToCSV)
+	in, err := env.Files.Open("static/inputs/records.csv")
 	if err != nil {
 		panic(err)
 	}
@@ -221,10 +226,80 @@ func (cmd *BackfillCmd) Run(env *Environment, client http.Client, adjustmentStor
 type ServeCmd struct {
 	AccountID  string `required help:"the account id that this service should leverage."`
 	CampaignID string `required help:"the campaign id that this service should leverage"`
-	PathToCSV  string `required help:"the absolute path to the CSV file full of historical donation information."`
 }
 
-func (cmd *ServeCmd) Run(env *Environment, client http.Client) error {
+func (cmd *ServeCmd) Run(env *Environment, client donatelyhttp.Client, adjustmentStore donately.AdjustmentStore) error {
+	account, err := client.FindAccount(cmd.AccountID)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	campaign, err := client.FindCampaign(cmd.CampaignID, account)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	in, err := env.Files.Open("static/inputs/records.csv")
+	if err != nil {
+		panic(err)
+	}
+
+	collectionRecords, err := donately.ParseCollectionReportCSV(in)
+
+	if err != nil {
+		panic(err)
+	}
+
+	r := gin.Default()
+
+	api := r.Group("/api")
+	{
+		api.GET("/health", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		})
+
+		api.GET("/campaign/overview", donatelyhttp.CampaignOverviewHandler(client, adjustmentStore, account, campaign, collectionRecords))
+	}
+
+	uiFS, err := fs.Sub(env.UI, "static/donor-dashboard/dist")
+	if err != nil {
+		panic(err)
+	}
+
+	r.NoRoute(gin.WrapH(http.FileServer(http.FS(uiFS))))
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: r,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen error: %s\n", err)
+		}
+	}()
+	log.Printf("Server running on :%v\n", port)
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %s", err)
+	}
+
+	log.Println("Server exited gracefully")
+
 	return nil
 }
 
@@ -236,7 +311,7 @@ type CLI struct {
 func Run(env Environment) int {
 	app := CLI{}
 
-	client, err := http.NewDonatelyClient()
+	client, err := donatelyhttp.NewDonatelyClient()
 	if err != nil {
 		panic(err.Error())
 	}
@@ -254,7 +329,7 @@ func Run(env Environment) int {
 		}),
 	)
 
-	cntx.BindTo(client, (*http.Client)(nil))
+	cntx.BindTo(client, (*donatelyhttp.Client)(nil))
 	cntx.BindTo(adjustmentStore, (*donately.AdjustmentStore)(nil))
 
 	err = cntx.Run(&env)

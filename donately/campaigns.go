@@ -52,3 +52,23 @@ type CampaignCoverPhotoSizes struct {
 	Original *string `json:"original"`
 	Large    *string `json:"large"`
 }
+
+type CampaignOverview struct {
+	ID                  string  `json:"id"`
+	Title               string  `json:"title"`
+	Slug                string  `json:"slug"`
+	Type                string  `json:"type"`
+	URL                 string  `json:"url"`
+	Status              string  `json:"status"`
+	Permalink           string  `json:"permalink"`
+	Description         *string `json:"description"`
+	Content             *string `json:"content"`
+	Created             int64   `json:"created"`
+	Updated             int64   `json:"updated"`
+	StartDate           *string `json:"start_date"` // use *time.Time if ISO format is confirmed
+	EndDate             *string `json:"end_date"`
+	GoalInCents         int64   `json:"goal_in_cents"`
+	AmountRaisedInCents int64   `json:"amount_raised_in_cents"`
+	PercentFunded       float64 `json:"percent_funded"`
+	Donors              []Donor `json:"donors"`
+}

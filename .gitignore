@@ -32,3 +32,5 @@ go.work.sum
 # .vscode/
 
 cmd/sync/sync
+cmd/sync/static/inputs/records.csv
+donor.db

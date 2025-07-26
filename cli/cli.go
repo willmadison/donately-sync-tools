@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"github.com/willmadison/donately-sync-tools/donately/http"
 )
 
+const epsilon = 1e-9
+
 // Environment provides an abstraction around the execution environment
 type Environment struct {
 	Stderr io.Writer
@@ -20,11 +23,11 @@ type Environment struct {
 
 type BackfillCmd struct {
 	AccountID  string `required help:"the account id that this backfill should take place in."`
-	PathToCSV  string `required help:"the absolute path to the CSV file full of historical donation information."`
 	CampaignID string `required help:"the campaign id that this backfill should take place in."`
+	PathToCSV  string `required help:"the absolute path to the CSV file full of historical donation information."`
 }
 
-func (cmd *BackfillCmd) Run(env *Environment, client http.Client) error {
+func (cmd *BackfillCmd) Run(env *Environment, client http.Client, adjustmentStore donately.AdjustmentStore) error {
 	account, err := client.FindAccount(cmd.AccountID)
 	if err != nil {
 		panic(err.Error())
@@ -136,6 +139,19 @@ func (cmd *BackfillCmd) Run(env *Environment, client http.Client) error {
 			// See how much of a delta there is between their historical total donations and what the record says they've given
 			donations := donationsByPersonId[person.ID]
 
+			// Handle any donation adjustments (i.e. program/fundraisers this brother may have participated in)
+
+			adjustments, err := adjustmentStore.GetAdustmentsByPerson(context.Background(), person)
+			if err == nil && len(adjustments) != len(c.Adjustments) {
+				fmt.Printf("there's an adjustment discrepancy for %v %v let's update our data based on the official record.\n", c.FirstName, c.LastName)
+				err := adjustmentStore.SaveAdjustments(context.Background(), person, c.Adjustments)
+				if err != nil {
+					fmt.Printf("encounterd an error processing adjustments for %v %v, will retry later. (%v)\n", c.FirstName, c.LastName, err.Error())
+				}
+			} else if err != nil {
+				fmt.Printf("encounterd an error processing adjustments for %v %v, skipping that step for now (%v).\n", c.FirstName, c.LastName, err.Error())
+			}
+
 			var cumulativeDonationInCents int64
 
 			for _, donation := range donations {
@@ -143,17 +159,18 @@ func (cmd *BackfillCmd) Run(env *Environment, client http.Client) error {
 			}
 
 			cumulativeDonation := cumulativeDonationInCents / 100
-			balanceDue := c.AmountPledged - float64(cumulativeDonation)
+			expectedBalanceDue := c.AmountPledged - float64(cumulativeDonation)
+
+			if expectedBalanceDue-c.AmountDue < epsilon || c.AmountDue == 0 {
+				fmt.Printf("According to Donately and/or our records regarding adjustments and other programs, %v %v has actually met their %v pledge with no remaining due.\n", person.FirstName, person.LastName, c.AmountPledged)
+				continue
+			}
+
+			fmt.Printf("According to Donately, %v %v has actually given %v of their %v pledge with %.2f remaining due (accounting for adjustments and other fundraising programs).\n", person.FirstName, person.LastName, cumulativeDonation, c.AmountPledged, c.AmountDue)
 
 			delta := c.AmountDonated - float64(cumulativeDonation)
 
-			if balanceDue == 0 {
-				fmt.Printf("According to Donately, %v %v has actually met their %v pledge with no remaining due.\n", person.FirstName, person.LastName, c.AmountPledged)
-			} else if balanceDue > 0 {
-				fmt.Printf("According to Donately, %v %v has actually given %v of their %v pledge with %.2f remaining due.\n", person.FirstName, person.LastName, cumulativeDonation, c.AmountPledged, balanceDue)
-			}
-
-			if delta > 0 {
+			if delta > 0 && delta >= .5 {
 				fmt.Printf("According to Chi Tau records, %v %v has given %v of their %v pledge leaving a delta of %.2f to be recorded in Donately.\n", person.FirstName, person.LastName, c.AmountDonated, c.AmountPledged, delta)
 
 				donationToSave := donately.Donation{
@@ -201,8 +218,19 @@ func (cmd *BackfillCmd) Run(env *Environment, client http.Client) error {
 	return nil
 }
 
+type ServeCmd struct {
+	AccountID  string `required help:"the account id that this service should leverage."`
+	CampaignID string `required help:"the campaign id that this service should leverage"`
+	PathToCSV  string `required help:"the absolute path to the CSV file full of historical donation information."`
+}
+
+func (cmd *ServeCmd) Run(env *Environment, client http.Client) error {
+	return nil
+}
+
 type CLI struct {
 	Backfill BackfillCmd `cmd help:"Backfills Donately donors based on a given account_id and csv file of donor data."`
+	Serve    ServeCmd    `cmd help:"Serves our campaign progress service/ui for visualizing how brothers have progressed on their pledges."`
 }
 
 func Run(env Environment) int {
@@ -213,15 +241,21 @@ func Run(env Environment) int {
 		panic(err.Error())
 	}
 
+	adjustmentStore, err := donately.NewAdjustmentStore()
+	if err != nil {
+		panic(err.Error())
+	}
+
 	cntx := kong.Parse(&app,
-		kong.Name("backfill"),
 		kong.Description("donately utils"),
 		kong.UsageOnError(),
 		kong.ConfigureHelp(kong.HelpOptions{
 			Compact: true,
 		}),
 	)
+
 	cntx.BindTo(client, (*http.Client)(nil))
+	cntx.BindTo(adjustmentStore, (*donately.AdjustmentStore)(nil))
 
 	err = cntx.Run(&env)
 	cntx.FatalIfErrorf(err)

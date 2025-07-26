@@ -82,8 +82,9 @@ type ChargeSource struct {
 }
 
 type CollectionReportRecord struct {
-	FirstName, LastName, EmailAddress string
-	AmountDonated, AmountPledged      float64
+	FirstName, LastName, EmailAddress       string
+	AmountDonated, AmountDue, AmountPledged float64
+	Adjustments                             []Adjustment
 }
 
 func ParseCollectionReportCSV(r io.ReadCloser) ([]CollectionReportRecord, error) {
@@ -91,8 +92,7 @@ func ParseCollectionReportCSV(r io.ReadCloser) ([]CollectionReportRecord, error)
 
 	reader := csv.NewReader(r)
 
-	_, err := reader.Read()
-
+	columnHeaders, err := reader.Read()
 	if err != nil {
 		return nil, err
 	}
@@ -111,12 +111,33 @@ func ParseCollectionReportCSV(r io.ReadCloser) ([]CollectionReportRecord, error)
 		email := record[2]
 		rawDonationAmount := record[3]
 		rawDonationAmount = strings.ReplaceAll(rawDonationAmount, ",", "")
-		rawPledgedAmount := record[4]
+		rawAmountDue := record[4]
+		rawAmountDue = strings.ReplaceAll(rawAmountDue, ",", "")
+		rawPledgedAmount := record[5]
 		rawPledgedAmount = strings.ReplaceAll(rawPledgedAmount, ",", "")
+
+		if rawDonationAmount == "" {
+			rawDonationAmount = "0"
+		}
 
 		amountDonated, err := strconv.ParseFloat(rawDonationAmount, 64)
 		if err != nil {
+			fmt.Printf("encountered an error parsing the following record: %+v", record)
 			return nil, err
+		}
+
+		if rawAmountDue == "" {
+			rawAmountDue = "0"
+		}
+
+		amountDue, err := strconv.ParseFloat(rawAmountDue, 64)
+		if err != nil {
+			fmt.Printf("encountered an error parsing the following record: %+v", record)
+			return nil, err
+		}
+
+		if rawPledgedAmount == "" {
+			rawPledgedAmount = "0"
 		}
 
 		amountPledged, err := strconv.ParseFloat(rawPledgedAmount, 64)
@@ -128,14 +149,46 @@ func ParseCollectionReportCSV(r io.ReadCloser) ([]CollectionReportRecord, error)
 			email = fmt.Sprintf("%v.%v@gmail.com", firstName, lastName)
 		}
 
+		adjustments := parseAdjustments(columnHeaders[6:], record[6:])
+
 		reportRecords = append(reportRecords, CollectionReportRecord{
 			FirstName:     firstName,
 			LastName:      lastName,
 			EmailAddress:  email,
 			AmountDonated: amountDonated,
+			AmountDue:     amountDue,
 			AmountPledged: amountPledged,
+			Adjustments:   adjustments,
 		})
 	}
 
 	return reportRecords, nil
+}
+
+func parseAdjustments(adjustmentNames, adjustmentValues []string) []Adjustment {
+	var adjustments []Adjustment
+
+	for i, value := range adjustmentValues {
+		if value != "" {
+			displayName := adjustmentNames[i]
+			slug := sluggify(displayName)
+
+			amount, _ := strconv.ParseFloat(value, 64)
+
+			if amount > 0 {
+				adjustments = append(adjustments, Adjustment{
+					DisplayName: adjustmentNames[i],
+					Slug:        slug,
+					Amount:      amount,
+				})
+			}
+		}
+	}
+
+	return adjustments
+}
+
+func sluggify(value string) string {
+	slug := strings.ReplaceAll(value, " ", "-")
+	return strings.ToLower(slug)
 }
